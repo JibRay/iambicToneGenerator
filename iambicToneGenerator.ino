@@ -42,6 +42,7 @@
 // These defines set the behavior of the program:
 #define CODE_SPEED   20                     // Words per minute.
 #define TONE_FREQ    800                    // Hertz.
+#define BAUDRATE     19200
 
 //===========================================================================
 // Calculated dit and dah times. These are according to the 'PARIS' timing
@@ -71,15 +72,104 @@
 #define DIT_DAH       3
 #define DAH_DIT       4
 
+// Command states.
+#define CMD_IDLE      0
+#define CMD_ARGUMENT  1
+
+// Argument states.
+#define PRINT_HELP    0
+#define SET_SPEED     1
+
+#define LINE_BUFFER_SIZE 80
+
+//============================================================================
+// Types
+
+struct Command {
+  int state;
+  int command;
+  int index;
+  char line[80];
+  void begin(int cmd) {
+    index = 0;
+    for (int i = 0; i < LINE_BUFFER_SIZE; ++i)
+      line[i] = '\0';
+    state = CMD_ARGUMENT;
+    command = cmd;
+  }
+};
+
 //===========================================================================
 // Global variables:
-int codeSpeed, toneFrequency;
+int toneFrequency;
 int state, toneState, lastTone, toneType;
-unsigned long toneTimer;
+unsigned long toneTimer, wordTime, ditTime, dahTime;
+Command command;
 
 //===========================================================================
 // Global functions.
+
+// speed argument is words per minute.
 void setWordSpeed(int speed) {
+  unsigned long wordTime = (unsigned long)(60.0 / (float)speed);
+  ditTime = (unsigned long)(1000.0 * (float)wordTime / 50.0);
+  dahTime = (unsigned long)((float)ditTime * 3.0);
+}
+
+void updateCommands() {
+  int codeSpeed;
+  
+  while (Serial.available() > 0) {
+    char c = Serial.read();
+    switch(command.state) {
+      case CMD_IDLE:
+        switch(c) {
+          case '?':
+            command.begin(PRINT_HELP);
+            break;
+          case 'w':
+            Serial.print(F("Set code speed to "));
+            Serial.println(F(" words per minute."));
+            break;
+          default:
+            Serial.print(F("Unrecognized command "));
+            Serial.println(c);
+        }
+        break;
+      case CMD_ARGUMENT:
+        switch(command.command) {
+          case PRINT_HELP:
+            if (c == '\r' || c == '\n') {
+              printHelp();
+              command.state = CMD_IDLE;
+            }
+            break;
+          case SET_SPEED:
+            if (c == '\r' || c == '\n') {
+              codeSpeed = atoi(command.line);
+              setWordSpeed(codeSpeed);
+              Serial.println();
+              command.state = CMD_IDLE;
+            } else if (c >= '0' && c <= '9') {
+              command.line[command.index++] = c;
+              Serial.print(c);
+              if (command.index >= LINE_BUFFER_SIZE)
+                command.state = CMD_IDLE;
+            }
+            break;
+        }
+        break;
+    }
+  }
+}
+
+void printHelp() {
+  Serial.println();
+  Serial.print(F("Iambic Tone Generator version "));
+  Serial.println(VERSION);
+  Serial.println(F("Commands:"));
+  Serial.println(F("?          Print this help."));
+  Serial.println(F("w speed    Set speed as words per minute."));
 }
 
 void updateMainState() {
@@ -203,16 +293,22 @@ void setup() {
   pinMode(DIT_PIN, INPUT_PULLUP);
   pinMode(DAH_PIN, INPUT_PULLUP);
 
-  codeSpeed = CODE_SPEED;
+  Serial.begin(BAUDRATE);
+
+  setWordSpeed(CODE_SPEED);
   toneFrequency = TONE_FREQ;
   state = toneState = IDLE_STATE;
   lastTone = QUIET;
+
+  command.state = CMD_IDLE;
+
+  printHelp();
 }
 
 //===========================================================================
 // The main loop:
 void loop() {
+  updateCommands();
   updateMainState();
   updateToneState(toneType);
 }
-
